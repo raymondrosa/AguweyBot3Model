@@ -1,6 +1,6 @@
 # ============================================
-# AGUWEYBOT - VERSIÓN MINISTRAL-3 + QWEN 2.5 72B
-# CON LOGO DESDE GITHUB - ABRIL 2026
+# AGUWEYBOT - VERSIÓN MINISTRAL-3 + QWEN 2.5 72B + GEMMA 4 31B
+# CON LOGO DESDE GITHUB - MAYO 2026
 # ============================================
 
 import os
@@ -40,6 +40,7 @@ except ImportError:
 MODEL_NAME = "ministral-3b-latest"
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Verificar API keys
 if "MISTRAL_API_KEY" not in st.secrets:
@@ -50,6 +51,9 @@ MISTRAL_API_KEY = st.secrets["MISTRAL_API_KEY"]
 
 # Verificar OpenRouter key (opcional, solo si se quiere usar Qwen)
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
+
+# Verificar Gemini key (opcional, solo si se quiere usar Gemma 4)
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", None)
 
 # Directorio para guardar conversaciones
 SAVE_DIR = "conversaciones_guardadas"
@@ -73,7 +77,7 @@ class Config:
 # SYSTEM PROMPT
 # ============================================
 SYSTEM_PROMPT = """
-Eres AguweyBot, un asistente experto en análisis de documentos usando el modelo ministral-3.
+Eres AguweyBot, un asistente experto en análisis de documentos usando inteligencia artificial.
 
 Cuando el usuario suba un archivo, DEBES:
 1. Leer TODO el contenido del archivo cuidadosamente
@@ -324,7 +328,7 @@ def mostrar_logo_fallback():
             <span class="logo-emoji">🤖</span>
         </div>
         <div class="logo-title">AGUWEYBOT</div>
-        <div class="logo-subtitle">Ministral-3</div>
+        <div class="logo-subtitle">Multi-Modelo IA</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -638,7 +642,7 @@ def leer_archivo_completo(uploaded_file):
         return None, f"Error inesperado: {str(e)}"
 
 # ============================================
-# FUNCIÓN PARA STREAMING CON MISTRAL (API REST) - ORIGINAL
+# FUNCIÓN PARA STREAMING CON MISTRAL (API REST)
 # ============================================
 def generar_respuesta_streaming_mistral(messages, container):
     """Genera respuesta con streaming usando la API REST de Mistral"""
@@ -708,7 +712,7 @@ def generar_respuesta_streaming_mistral(messages, container):
         
         elapsed = time.time() - start_time
         response_container.markdown(
-            f'<div class="respuesta-aguwey" style="position: relative;">{full_response}<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generado en {elapsed:.1f}s</div></div>',
+            f'<div class="respuesta-aguwey" style="position: relative;">{full_response}<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generado con Mistral en {elapsed:.1f}s</div></div>',
             unsafe_allow_html=True
         )
         
@@ -817,6 +821,110 @@ def generar_respuesta_streaming_qwen(messages, container):
         return f"Error: {str(e)}"
 
 # ============================================
+# FUNCIÓN PARA GEMMA 4 VÍA GEMINI API
+# ============================================
+def generar_respuesta_streaming_gemma(messages, container):
+    """Genera respuesta usando Gemma 4 31B via Gemini API"""
+    
+    if GEMINI_API_KEY is None:
+        return "❌ Error: No se configuró la API key de Gemini. Agrega GEMINI_API_KEY a los secrets para usar Gemma 4.\n\n💡 Obtén tu key gratis en: https://aistudio.google.com/apikey"
+    
+    try:
+        full_response = ""
+        response_container = container.empty()
+        
+        # Construir el prompt completo
+        query = ""
+        system_instruction = ""
+        
+        for msg in messages:
+            if msg["role"] == "system":
+                system_instruction = msg["role"] + ": " + msg["content"]
+            elif msg["role"] == "user":
+                query = msg["content"]
+        
+        # Para Gemma, incluimos el historial de conversación
+        prompt_parts = []
+        
+        # Agregar instrucción del sistema
+        if system_instruction:
+            prompt_parts.append(system_instruction)
+        
+        # Agregar el historial de mensajes (sin el sistema)
+        for msg in messages:
+            if msg["role"] == "system":
+                continue
+            role = "Usuario" if msg["role"] == "user" else "Asistente"
+            prompt_parts.append(f"{role}: {msg['content']}")
+        
+        # Agregar el prefijo para la respuesta
+        prompt_parts.append("Asistente:")
+        
+        prompt = "\n\n".join(prompt_parts)
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        # Usamos el modelo Gemma 4 31B
+        url = f"{GEMINI_API_URL}/gemma-4-31b-it:generateContent?key={GEMINI_API_KEY}"
+        
+        data = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 2000,
+                "topP": 0.95,
+                "topK": 40
+            }
+        }
+        
+        response = requests.post(
+            url,
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+        
+        if response.status_code != 200:
+            st.error(f"❌ Error de Gemini API: {response.status_code}")
+            error_detail = ""
+            try:
+                error_data = response.json()
+                error_detail = error_data.get("error", {}).get("message", "")
+            except:
+                error_detail = response.text[:200]
+            return f"Error {response.status_code}: {error_detail}"
+        
+        result = response.json()
+        
+        # Extraer el texto de la respuesta
+        if "candidates" in result and len(result["candidates"]) > 0:
+            full_response = result["candidates"][0]["content"]["parts"][0]["text"]
+        else:
+            full_response = "No se pudo generar respuesta."
+        
+        # Mostrar la respuesta
+        response_container.markdown(
+            f'<div class="respuesta-aguwey" style="position: relative;">{full_response}<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generado con Gemma 4 31B (256K contexto)</div></div>',
+            unsafe_allow_html=True
+        )
+        
+        return full_response
+        
+    except requests.exceptions.Timeout:
+        st.error("❌ Timeout: La solicitud excedió el tiempo límite")
+        return "Error: Tiempo de espera agotado"
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Error de conexión: {str(e)}")
+        return f"Error de conexión: {str(e)}"
+    except Exception as e:
+        st.error(f"❌ Error inesperado: {str(e)}")
+        return f"Error: {str(e)}"
+
+# ============================================
 # FUNCIÓN PRINCIPAL DE GENERACIÓN (elige el modelo)
 # ============================================
 def generar_respuesta_streaming(messages, container):
@@ -825,6 +933,8 @@ def generar_respuesta_streaming(messages, container):
     
     if modelo_actual == "qwen":
         return generar_respuesta_streaming_qwen(messages, container)
+    elif modelo_actual == "gemma":
+        return generar_respuesta_streaming_gemma(messages, container)
     else:
         return generar_respuesta_streaming_mistral(messages, container)
 
@@ -836,7 +946,7 @@ def texto_a_audio_unico(texto: str) -> Optional[bytes]:
         return None
     
     try:
-        texto_limpio = re.sub(r'[#*_`\[\]()---+"✨📄📊🔊🔗🔘🎯✅❌⚠️📌📚🔹💡🔧🌳🌟🤔🛠️📈🔍📍📏📝👍📐⏳🌍🏗️🌱💧📜🗣️🌡️📋]', '', texto)
+        texto_limpio = re.sub(r'[#*_`\[\]()---+"📄📊🔊🔗🔘🎯✅❌⚠️📌📚🔹💡🔧🌳🌟🤔🛠️📈🔍📍📏📝👍📐⏳🌍🏗️🌱💧📜🗣️🌡️📋]', '', texto)
         texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
         
         if not texto_limpio:
@@ -878,7 +988,7 @@ def exportar_conversacion(messages: List[Dict]) -> str:
 # ============================================
 def main():
     st.set_page_config(
-        page_title="AguweyBot - Asistente con Ministral-3 + Qwen 2.5 72B",
+        page_title="AguweyBot - Asistente con Mistral + Qwen + Gemma 4",
         page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -903,7 +1013,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        # Mostrar logo (desde archivo o fallback)
+        # Mostrar logo
         mostrar_logo()
         
         st.markdown("---")
@@ -913,15 +1023,16 @@ def main():
         
         # Opciones de modelo
         opciones_modelo = {
-            "mistral": "🤖 Mistral Ministral-3 (Default)",
-            "qwen": "🐉 Qwen 2.5 72B (128K contexto - requiere OpenRouter key)"
+            "mistral": "🤖 Mistral Ministral-3 (Default - Rápido)",
+            "qwen": "🐉 Qwen 2.5 72B (Requiere OpenRouter key)",
+            "gemma": "🐐 Gemma 4 31B (Gratuito - Requiere Gemini key)"
         }
         
         modelo_actual = st.radio(
             "Selecciona el modelo:",
             options=list(opciones_modelo.keys()),
             format_func=lambda x: opciones_modelo[x],
-            index=0 if st.session_state.modelo_seleccionado == "mistral" else 1,
+            index=0 if st.session_state.modelo_seleccionado == "mistral" else (1 if st.session_state.modelo_seleccionado == "qwen" else 2),
             key="selector_modelo"
         )
         
@@ -929,28 +1040,35 @@ def main():
             st.session_state.modelo_seleccionado = modelo_actual
             st.rerun()
         
-        # Mostrar estado del modelo seleccionado
-        if st.session_state.modelo_seleccionado == "qwen":
-            if OPENROUTER_API_KEY:
-                st.success("✅ Qwen 2.5 72B disponible")
-                st.info("📚 Contexto de 128K tokens - Ideal para documentos largos")
-            else:
-                st.warning("⚠️ Qwen no disponible - Falta OPENROUTER_API_KEY")
-                st.info("💡 Para usar Qwen, agrega OPENROUTER_API_KEY a los secrets")
+        st.markdown("---")
+        
+        # Mostrar estado de los modelos
+        st.markdown("### 🔑 Estado de APIs")
+        
+        # Mistral
+        st.success("✅ Mistral AI")
+        st.markdown(f"<span style='font-size:11px'>🤖 {MODEL_NAME}</span>", unsafe_allow_html=True)
+        
+        # Qwen
+        if OPENROUTER_API_KEY:
+            st.success("✅ OpenRouter (Qwen)")
+            st.markdown(f"<span style='font-size:11px'>🐉 Qwen 2.5 72B</span>", unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ OpenRouter no configurado")
+            st.markdown(f"<span style='font-size:10px'>🐉 Agrega OPENROUTER_API_KEY</span>", unsafe_allow_html=True)
+        
+        # Gemma
+        if GEMINI_API_KEY:
+            st.success("✅ Gemini API (Gemma)")
+            st.markdown(f"<span style='font-size:11px'>🐐 Gemma 4 31B - 256K contexto</span>", unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ Gemini no configurado")
+            st.markdown(f"<span style='font-size:10px'>🐐 Agrega GEMINI_API_KEY</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='font-size:10px'>💡 <a href='https://aistudio.google.com/apikey' target='_blank'>Obtener gratis</a></span>", unsafe_allow_html=True)
         
         st.markdown("---")
         
-        st.markdown("### 🔑 Estado")
-        if st.session_state.modelo_seleccionado == "mistral":
-            st.success("✅ Mistral AI conectado (API REST)")
-            st.markdown(f"<span style='font-size:12px'>🤖 Modelo: <strong>{MODEL_NAME}</strong></span>", unsafe_allow_html=True)
-        else:
-            if OPENROUTER_API_KEY:
-                st.success("✅ OpenRouter conectado")
-                st.markdown(f"<span style='font-size:12px'>🐉 Modelo: <strong>Qwen 2.5 72B</strong></span>", unsafe_allow_html=True)
-            else:
-                st.error("❌ OpenRouter no configurado")
-        
+        # Estado del audio
         if TTS_AVAILABLE:
             st.success("✅ Audio disponible")
         else:
@@ -1052,9 +1170,19 @@ def main():
             st.rerun()
     
     # Contenido principal
-    modelo_mostrar = "Ministral-3" if st.session_state.modelo_seleccionado == "mistral" else "Qwen 2.5 72B"
-    st.markdown(f"<h1>🤖 AguweyBot <span class='model-badge'>{modelo_mostrar}</span></h1>", unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Asistente inteligente con análisis de documentos y audio</p>', unsafe_allow_html=True)
+    # Determinar qué modelo mostrar en el título
+    if st.session_state.modelo_seleccionado == "mistral":
+        modelo_mostrar = "Ministral-3"
+        modelo_icono = "🤖"
+    elif st.session_state.modelo_seleccionado == "qwen":
+        modelo_mostrar = "Qwen 2.5 72B"
+        modelo_icono = "🐉"
+    else:
+        modelo_mostrar = "Gemma 4 31B"
+        modelo_icono = "🐐"
+    
+    st.markdown(f"<h1>{modelo_icono} AguweyBot <span class='model-badge'>{modelo_mostrar}</span></h1>", unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Asistente inteligente con análisis de documentos y audio | 3 modelos disponibles</p>', unsafe_allow_html=True)
     
     # Mostrar historial
     for i, msg in enumerate(st.session_state.messages):
@@ -1086,14 +1214,16 @@ def main():
         st.info("""
         👋 **¡Bienvenido a AguweyBot!**
         
+        **🧠 Modelos disponibles:**
+        - **🤖 Mistral Ministral-3** (Default) - Rápido y eficiente
+        - **🐉 Qwen 2.5 72B** - Muy potente (requiere OpenRouter key)
+        - **🐐 Gemma 4 31B** - 256K contexto, gratuito (requiere Gemini key)
+        
         **📝 Cómo usar:**
         1. Sube un archivo en el panel izquierdo
         2. Haz clic en **"Leer TODO"**
-        3. Pregúntame sobre el contenido
-        
-        **🧠 Modelos disponibles:**
-        - **Mistral Ministral-3** (Default) - Rápido y eficiente
-        - **Qwen 2.5 72B** (requiere key) - 128K contexto para documentos largos
+        3. Selecciona el modelo que prefieras
+        4. Pregúntame sobre el contenido
         
         **💾 Guarda conversaciones** para retomarlas después
         """)
@@ -1133,14 +1263,13 @@ PREGUNTA: {prompt}
 """
                     messages.append({"role": "user", "content": contexto})
                 
-                # Generar respuesta (automáticamente usa el modelo seleccionado)
+                # Generar respuesta
                 container = st.empty()
                 response = generar_respuesta_streaming(messages, container)
                 
                 st.session_state.messages.append({"role": "assistant", "content": response})
                 
-                # 🔁 LIMPIAR AUDIO DESPUÉS DE NUEVA RESPUESTA 🔁
-                # Esto evita que se muestre audio de mensajes anteriores automáticamente
+                # Limpiar audio después de nueva respuesta
                 st.session_state.audio_actual_bytes = None
                 st.session_state.ultimo_audio_idx = -1
                 st.rerun()
@@ -1152,7 +1281,7 @@ PREGUNTA: {prompt}
     st.markdown(
         f"""
         <div class="fixed-footer">
-            <strong>CC-SA</strong> Prof. Raymond Rosa Ávila • AguweyBot con {modelo_mostrar} 2026 • 🚀 v6.2
+            <strong>CC-SA</strong> Prof. Raymond Rosa Ávila • AguweyBot con {modelo_mostrar} 2026 • 🚀 v7.0 (3 Modelos: Mistral + Qwen + Gemma)
         </div>
         """,
         unsafe_allow_html=True
