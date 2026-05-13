@@ -1,6 +1,6 @@
 # ============================================
-# AGUWEYBOT - VERSIÓN MINISTRAL-3 + QWEN 2.5 72B + GEMMA 4 31B
-# CON LOGO DESDE GITHUB - MAYO 2026
+# AGUWEYBOT - VERSIÓN MINISTRAL-3 + QWEN 2.5 72B + GEMMA 4 (OpenRouter)
+# CON LOGO - MAYO 2026
 # ============================================
 
 import os
@@ -40,7 +40,6 @@ except ImportError:
 MODEL_NAME = "ministral-3b-latest"
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Verificar API keys
 if "MISTRAL_API_KEY" not in st.secrets:
@@ -49,11 +48,8 @@ if "MISTRAL_API_KEY" not in st.secrets:
 
 MISTRAL_API_KEY = st.secrets["MISTRAL_API_KEY"]
 
-# Verificar OpenRouter key (opcional, solo si se quiere usar Qwen)
+# Verificar OpenRouter key (necesaria para Qwen y Gemma 4)
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
-
-# Verificar Gemini key (opcional, solo si se quiere usar Gemma 4)
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", None)
 
 # Directorio para guardar conversaciones
 SAVE_DIR = "conversaciones_guardadas"
@@ -821,94 +817,83 @@ def generar_respuesta_streaming_qwen(messages, container):
         return f"Error: {str(e)}"
 
 # ============================================
-# FUNCIÓN PARA GEMMA 4 VÍA GEMINI API
+# FUNCIÓN PARA STREAMING CON GEMMA 4 (OpenRouter)
 # ============================================
 def generar_respuesta_streaming_gemma(messages, container):
-    """Genera respuesta usando Gemma 4 31B via Gemini API"""
-    
-    if GEMINI_API_KEY is None:
-        return "❌ Error: No se configuró la API key de Gemini. Agrega GEMINI_API_KEY a los secrets para usar Gemma 4.\n\n💡 Obtén tu key gratis en: https://aistudio.google.com/apikey"
+    """Genera respuesta con streaming usando Gemma 4 via OpenRouter"""
+    if OPENROUTER_API_KEY is None:
+        return "❌ Error: No se configuró la API key de OpenRouter. Agrega OPENROUTER_API_KEY a los secrets para usar Gemma 4."
     
     try:
         full_response = ""
         response_container = container.empty()
         
-        # Construir el prompt completo
-        query = ""
-        system_instruction = ""
-        
-        for msg in messages:
-            if msg["role"] == "system":
-                system_instruction = msg["role"] + ": " + msg["content"]
-            elif msg["role"] == "user":
-                query = msg["content"]
-        
-        # Para Gemma, incluimos el historial de conversación
-        prompt_parts = []
-        
-        # Agregar instrucción del sistema
-        if system_instruction:
-            prompt_parts.append(system_instruction)
-        
-        # Agregar el historial de mensajes (sin el sistema)
-        for msg in messages:
-            if msg["role"] == "system":
-                continue
-            role = "Usuario" if msg["role"] == "user" else "Asistente"
-            prompt_parts.append(f"{role}: {msg['content']}")
-        
-        # Agregar el prefijo para la respuesta
-        prompt_parts.append("Asistente:")
-        
-        prompt = "\n\n".join(prompt_parts)
-        
         headers = {
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://aguweybot.streamlit.app",
+            "X-Title": "AguweyBot"
         }
         
-        # Usamos el modelo Gemma 4 31B
-        url = f"{GEMINI_API_URL}/gemma-4-31b-it:generateContent?key={GEMINI_API_KEY}"
+        formatted_messages = []
+        for msg in messages:
+            formatted_messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
         
+        # Usamos Gemma 4 31B versión gratuita
         data = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 2000,
-                "topP": 0.95,
-                "topK": 40
-            }
+            "model": "google/gemma-4-31b-it:free",
+            "messages": formatted_messages,
+            "temperature": 0.7,
+            "max_tokens": 2000,
+            "stream": True
         }
         
         response = requests.post(
-            url,
+            OPENROUTER_API_URL,
             headers=headers,
             json=data,
+            stream=True,
             timeout=120
         )
         
         if response.status_code != 200:
-            st.error(f"❌ Error de Gemini API: {response.status_code}")
-            error_detail = ""
-            try:
-                error_data = response.json()
-                error_detail = error_data.get("error", {}).get("message", "")
-            except:
-                error_detail = response.text[:200]
-            return f"Error {response.status_code}: {error_detail}"
+            st.error(f"❌ Error de OpenRouter (Gemma): {response.status_code}")
+            return f"Error: {response.text}"
         
-        result = response.json()
+        start_time = time.time()
         
-        # Extraer el texto de la respuesta
-        if "candidates" in result and len(result["candidates"]) > 0:
-            full_response = result["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            full_response = "No se pudo generar respuesta."
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    line = line[6:]
+                    if line.strip() == '[DONE]':
+                        break
+                    
+                    try:
+                        chunk = json.loads(line)
+                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                            delta = chunk['choices'][0].get('delta', {})
+                            content = delta.get('content', '')
+                            
+                            if content:
+                                full_response += content
+                                
+                                elapsed = time.time() - start_time
+                                response_container.markdown(
+                                    f'<div class="respuesta-aguwey" style="position: relative;">{full_response}▌<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generando con Gemma 4... {elapsed:.1f}s</div></div>',
+                                    unsafe_allow_html=True
+                                )
+                                time.sleep(0.002)
+                    except json.JSONDecodeError:
+                        continue
         
-        # Mostrar la respuesta
+        elapsed = time.time() - start_time
         response_container.markdown(
-            f'<div class="respuesta-aguwey" style="position: relative;">{full_response}<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generado con Gemma 4 31B (256K contexto)</div></div>',
+            f'<div class="respuesta-aguwey" style="position: relative;">{full_response}<div style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #666;">Generado con Gemma 4 31B en {elapsed:.1f}s</div></div>',
             unsafe_allow_html=True
         )
         
@@ -1025,7 +1010,7 @@ def main():
         opciones_modelo = {
             "mistral": "🤖 Mistral Ministral-3 (Default - Rápido)",
             "qwen": "🐉 Qwen 2.5 72B (Requiere OpenRouter key)",
-            "gemma": "🐐 Gemma 4 31B (Gratuito - Requiere Gemini key)"
+            "gemma": "🐐 Gemma 4 31B (Gratuito - vía OpenRouter)"
         }
         
         modelo_actual = st.radio(
@@ -1049,22 +1034,13 @@ def main():
         st.success("✅ Mistral AI")
         st.markdown(f"<span style='font-size:11px'>🤖 {MODEL_NAME}</span>", unsafe_allow_html=True)
         
-        # Qwen
+        # OpenRouter (para Qwen y Gemma)
         if OPENROUTER_API_KEY:
-            st.success("✅ OpenRouter (Qwen)")
-            st.markdown(f"<span style='font-size:11px'>🐉 Qwen 2.5 72B</span>", unsafe_allow_html=True)
+            st.success("✅ OpenRouter (Qwen + Gemma)")
+            st.markdown(f"<span style='font-size:11px'>🐉 Qwen 2.5 72B | 🐐 Gemma 4 31B</span>", unsafe_allow_html=True)
         else:
-            st.warning("⚠️ OpenRouter no configurado")
-            st.markdown(f"<span style='font-size:10px'>🐉 Agrega OPENROUTER_API_KEY</span>", unsafe_allow_html=True)
-        
-        # Gemma
-        if GEMINI_API_KEY:
-            st.success("✅ Gemini API (Gemma)")
-            st.markdown(f"<span style='font-size:11px'>🐐 Gemma 4 31B - 256K contexto</span>", unsafe_allow_html=True)
-        else:
-            st.warning("⚠️ Gemini no configurado")
-            st.markdown(f"<span style='font-size:10px'>🐐 Agrega GEMINI_API_KEY</span>", unsafe_allow_html=True)
-            st.markdown(f"<span style='font-size:10px'>💡 <a href='https://aistudio.google.com/apikey' target='_blank'>Obtener gratis</a></span>", unsafe_allow_html=True)
+            st.error("❌ OpenRouter no configurado")
+            st.markdown(f"<span style='font-size:10px'>⚠️ Agrega OPENROUTER_API_KEY para usar Qwen y Gemma</span>", unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -1214,10 +1190,10 @@ def main():
         st.info("""
         👋 **¡Bienvenido a AguweyBot!**
         
-        **🧠 Modelos disponibles:**
+        **🧠 Modelos disponibles (vía OpenRouter):**
         - **🤖 Mistral Ministral-3** (Default) - Rápido y eficiente
-        - **🐉 Qwen 2.5 72B** - Muy potente (requiere OpenRouter key)
-        - **🐐 Gemma 4 31B** - 256K contexto, gratuito (requiere Gemini key)
+        - **🐉 Qwen 2.5 72B** - Muy potente, ideal para análisis complejos
+        - **🐐 Gemma 4 31B** - Gratuito, 256K contexto, excelente para documentos largos
         
         **📝 Cómo usar:**
         1. Sube un archivo en el panel izquierdo
@@ -1281,7 +1257,7 @@ PREGUNTA: {prompt}
     st.markdown(
         f"""
         <div class="fixed-footer">
-            <strong>CC-SA</strong> Prof. Raymond Rosa Ávila • AguweyBot con {modelo_mostrar} 2026 • 🚀 v7.0 (3 Modelos: Mistral + Qwen + Gemma)
+            <strong>CC-SA</strong> Prof. Raymond Rosa Ávila • AguweyBot v7.0 • 3 Modelos: Mistral + Qwen + Gemma 4 • 2026
         </div>
         """,
         unsafe_allow_html=True
